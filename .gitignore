@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+.venv/
+state.json
+state.json.tmp
+__pycache__/
