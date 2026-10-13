@@ -1266,7 +1266,7 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
             "team_a_rounds": rounds[0] if rounds else None, "team_b_rounds": rounds[1] if rounds else None,
             "balance_mode": m.mode, "map": m.map, "reported_by": interaction.user.display_name,
             "source": "discord", "source_ref": jump, "discord_match_id": m.id,
-            "notes": f"Discord match #{m.id}" + ("" if data else " - no screenshot"),
+            "notes": "" if data else "No screenshot",   # the match code is shown on the website already
         })
     except ApiError as e:
         m.status = "live"
