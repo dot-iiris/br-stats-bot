@@ -33,7 +33,7 @@ short notice that it timed out.
 **Teams.** When a lobby is full, the website balances the teams using MMR from
 the current ranked season, and the bot posts them together with a random map.
 Unranked lobbies default to MMR Balance and avoid repeating the teams the
-players had in their recent games (the last 3 games in 3v3, the last game in
+players had in their recent games (the last 2 games in 3v3, the last game in
 2v2); the next-fairest split is used instead. The website keeps this history,
 including matches that have started but not yet been confirmed. The
 players are removed from any other lobbies they were waiting in and cannot join
