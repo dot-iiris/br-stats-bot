@@ -453,9 +453,8 @@ async def launch_match(lobby: Lobby):
     bot.store.save()
     by_pid = {m.player_id: m for m in lobby.members}
     try:
-        # unranked: don't hand the same players the same teams as their last game
-        avoid = [] if lobby.ranked else bot.store.teams_to_avoid(list(by_pid))
-        res = await bot.api.balance(list(by_pid), lobby.format, lobby.mode, avoid)
+        # unranked: the website avoids the teams these players had in their recent games
+        res = await bot.api.balance(list(by_pid), lobby.format, lobby.mode, avoid_repeats=not lobby.ranked)
     except ApiError as e:
         bot.store.lobbies[lobby.id] = lobby  # put it back so nobody loses their spot
         bot.store.save()
@@ -490,7 +489,10 @@ async def launch_match(lobby: Lobby):
     mentions = " ".join(f"<@{i}>" for i in m.all_ids())
     msg = await ch.send(content=f"Match found! {mentions}", embed=match_embed(m), view=match_view(m))
     m.message_id = msg.id
-    bot.store.remember_teams([p["player_id"] for p in m.team_a], [p["player_id"] for p in m.team_b])
+    try:   # the website counts these teams as played straight away (ranked games too)
+        await bot.api.record_lineup(m.id, m.format, [p["player_id"] for p in m.team_a], [p["player_id"] for p in m.team_b])
+    except ApiError as e:
+        log.warning("Couldn't record the line-up of match %s: %s", m.id, e.detail)
     bot.store.matches[m.id] = m      # its players can't join lobbies until it's submitted or cancelled
     bot.store.save()
     if CLEAN_MATCH_POST:
@@ -505,6 +507,14 @@ async def launch_match(lobby: Lobby):
 
 
 # ---------------------------------------------------------------- match flow
+async def forget_lineup(m: Match):
+    """A cancelled match's teams don't count as played for repeat avoidance."""
+    try:
+        await bot.api.forget_lineup(m.id)
+    except ApiError as e:
+        log.warning("Couldn't forget the line-up of match %s: %s", m.id, e.detail)
+
+
 async def handle_match_button(interaction: discord.Interaction, action: str, match_id: str):
     m = bot.store.matches.get(match_id)
     if not m:
@@ -516,8 +526,8 @@ async def handle_match_button(interaction: discord.Interaction, action: str, mat
             m.status = "cancelled"
             m.report = {"cancelled_by": interaction.user.display_name}
             bot.store.matches.pop(m.id, None)
-            bot.store.forget_teams([p["player_id"] for p in m.team_a], [p["player_id"] for p in m.team_b])
             bot.store.save()
+        asyncio.get_running_loop().create_task(forget_lineup(m))
         if CLEAN_MATCH_POST:
             await interaction.response.defer()
             await tidy_up_match(m)
@@ -1543,7 +1553,7 @@ async def admin_cancel(interaction: discord.Interaction, match_id: str):
     if not m:
         return await reply(interaction, "No live match with that id.")
     m.status, m.report = "cancelled", {"cancelled_by": interaction.user.display_name}
-    bot.store.forget_teams([p["player_id"] for p in m.team_a], [p["player_id"] for p in m.team_b])
+    await forget_lineup(m)
     await update_match_message(m)
     await tidy_up_match(m)
     await reply(interaction, f"Cancelled match #{m.id}.")

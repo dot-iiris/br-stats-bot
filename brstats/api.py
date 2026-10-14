@@ -71,11 +71,21 @@ class WebsiteApi:
         })
 
     # --- matchmaking / matches ---
-    async def balance(self, player_ids: list, fmt: str, mode: str, avoid_teams: Optional[list] = None) -> dict:
-        # No season_id: the website uses the active ranked season's MMR.
+    async def balance(self, player_ids: list, fmt: str, mode: str, avoid_repeats: bool = False) -> dict:
+        # No season_id: the website uses the active ranked season's MMR. avoid_repeats: the website
+        # steers away from teams these players had in their recent games (logged or just launched).
         return await self._req("POST", "/matchmaking/balance",
                                json={"player_ids": player_ids, "format": fmt, "mode": mode,
-                                     "avoid_teams": avoid_teams or None})
+                                     "avoid_repeats": avoid_repeats})
+
+    async def record_lineup(self, code: str, fmt: str, team_a: list, team_b: list) -> None:
+        """A match was launched with these teams (counts for repeat avoidance before it's logged)."""
+        await self._req("POST", "/matchmaking/lineups",
+                        json={"code": code, "format": fmt, "team_a": team_a, "team_b": team_b})
+
+    async def forget_lineup(self, code: str) -> None:
+        """A launched match was cancelled."""
+        await self._req("DELETE", f"/matchmaking/lineups/{code}")
 
     async def reserve_match_code(self, fmt: str, ranked: bool) -> str:
         """The match's code from the website, e.g. S2-3v3-a1f9 (U-... for unranked)."""
