@@ -149,6 +149,8 @@ require any external accounts. Lobbies and live matches are saved in
 ## AI Disclaimer
 
 This bot was written with the assistance of Claude, an AI model made by
-Anthropic, used as a coding agent. The agent was used in the retrieval of
-relevant functions within the project's codebase, and code is implemented under
+Anthropic, used as a coding agent. The logic and calculations behind each
+feature are understood and directed by the maintainer; the agent was used
+mainly to find the relevant syntax in the languages and frameworks involved,
+and the most efficient way to write that logic. All code is implemented under
 the supervision of the maintainer.
