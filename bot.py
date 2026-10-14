@@ -1077,7 +1077,7 @@ async def on_interaction(interaction: discord.Interaction):
     try:
         if parts[1] == "lobby":
             lid = parts[3]
-            if lid.isdigit():   # a button from before lobbies had ids (it held the channel id)
+            if lid.isdigit() and len(lid) >= 15:   # a button from before lobbies had ids (it held the channel id)
                 lid = next((l.id for l in bot.store.lobbies_in(int(lid))), "gone")
             if parts[2] == "join":
                 await join_lobby(interaction, interaction.channel_id, lid)
@@ -1183,8 +1183,12 @@ async def lobby_close(interaction: discord.Interaction, lobby: Optional[str] = N
         here = bot.store.lobbies_in(interaction.channel_id)
         if lobby:
             target = next((l for l in here if l.id == lobby), None)
+            if not target:   # typed instead of picked from the list: match it against the lobby names
+                named = [l for l in here if lobby.strip().lower() in lobby_title(l).lower()]
+                target = named[0] if len(named) == 1 else None
             if not target:
-                return await reply(interaction, "That lobby isn't open here.")
+                return await reply(interaction, "That lobby isn't open here - pick it from the list:\n" + lobby_list(here)
+                                   if here else "No lobby here.")
         else:
             mine = [l for l in here if l.opener_id == me] or (here if admin else [])
             if not mine:

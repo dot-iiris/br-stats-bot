@@ -19,11 +19,19 @@ class Member:
     name: str
 
 
+def new_lobby_id() -> str:
+    """Random lobby id - never all digits, so it can't be mistaken for an old-style button (a channel id)."""
+    while True:
+        lid = secrets.token_hex(3)
+        if not lid.isdigit():
+            return lid
+
+
 @dataclass
 class Lobby:
     channel_id: int
     opener_id: int
-    id: str = field(default_factory=lambda: secrets.token_hex(3))   # a channel can have several lobbies
+    id: str = field(default_factory=new_lobby_id)   # a channel can have several lobbies
     created: float = field(default_factory=time.time)
     format: str = "3v3"
     mode: str = "hybrid"
