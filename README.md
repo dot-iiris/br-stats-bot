@@ -146,10 +146,9 @@ Screenshot reading is performed by the website using local OCR and does not
 require any external accounts. Lobbies and live matches are saved in
 `state.json`, so restarting the bot keeps them.
 
-## AI assistance
+## AI Disclaimer
 
-Much of this bot was written with the assistance of Claude, an AI model made by
-Anthropic, used as a coding agent. The work was done at the maintainer's
-direction, and commits are authored by the maintainer without recording this
-assistance individually. As with any software, the code may contain errors and
-is provided as is.
+This bot was written with the assistance of Claude, an AI model made by
+Anthropic, used as a coding agent. The agent was used in the retrieval of
+relevant functions within the project's codebase, and code is implemented under
+the supervision of the maintainer.
