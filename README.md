@@ -116,3 +116,10 @@ The bot needs the BR Stats website running from the **`bot-integration`** branch
 3. Run `start-bot.bat` again. Keep the website running (start-local.bat) while testing.
 
 Screenshot reading runs on the website (local OCR - no extra accounts). Lobbies and live matches are saved in `state.json`, so restarting the bot keeps them.
+
+## AI assistance
+
+Much of this bot was written with the help of Claude, an AI model made by
+Anthropic, used as a coding agent at the maintainer's direction. Commits are
+authored by the maintainer and don't record that assistance individually. As
+with any software, it may have bugs and is provided as is.
