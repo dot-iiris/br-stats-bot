@@ -479,7 +479,9 @@ async def launch_match(lobby: Lobby):
         team_a_mmr=res.get("team_a_mmr", 0), team_b_mmr=res.get("team_b_mmr", 0),
         win_probability_a=res.get("win_probability_a", 50),
         lobby_channel_id=lobby.channel_id,
-        cleanup_message_ids=[i for i in (lobby.message_id, lobby.opened_message_id) if i],
+        # the filled lobby post goes now (the Match found card replaces it); the rest at /submit
+        cleanup_message_ids=[i for i in (lobby.opened_message_id,) if i]
+                            + ([] if CLEAN_MATCH_POST else [i for i in (lobby.message_id,) if i]),
     )
     ch = await get_channel(m.channel_id)
     if ch is None:  # match feed channel missing - fall back to the lobby channel
@@ -491,7 +493,10 @@ async def launch_match(lobby: Lobby):
     bot.store.remember_teams([p["player_id"] for p in m.team_a], [p["player_id"] for p in m.team_b])
     bot.store.matches[m.id] = m      # its players can't join lobbies until it's submitted or cancelled
     bot.store.save()
-    await update_lobby_board(lobby, note=f"Lobby filled — see match #{m.id}.", final=True)
+    if CLEAN_MATCH_POST:
+        await _delete_message(lobby.channel_id, lobby.message_id)
+    else:
+        await update_lobby_board(lobby, note=f"Lobby filled — see match #{m.id}.", final=True)
     # everyone in this match leaves the other lobbies they were waiting in
     for member in lobby.members:
         others = bot.store.lobbies_of(member.discord_id)
@@ -587,8 +592,8 @@ async def _delete_message(channel_id: Optional[int], message_id: Optional[int]):
 
 
 async def tidy_up_match(m: Match):
-    """Clear the matchmaking chat of this match's posts: the 'Opened a lobby' message,
-    the filled lobby post and the 'Match found' post."""
+    """Clear the matchmaking chat of this match's posts: the 'Opened a lobby' message and the
+    'Match found' post (the filled lobby post was already deleted when the match started)."""
     if not CLEAN_MATCH_POST:
         return
     for mid in m.cleanup_message_ids:

@@ -45,9 +45,10 @@ champion, without scoreboard statistics. Such a result needs the same
 confirmations, and anyone in the match can later `/submit` the screenshot to
 replace it, in which case the confirmations start again.
 
-`/submit` also tidies the matchmaking channel: the "Opened a lobby" message, the
-filled lobby post and the "Match found" post are deleted, and the submission
-notice disappears after a minute. Cancelling a match clears them in the same
+When a lobby fills, its post is deleted, since the "Match found" card replaces
+it. `/submit` then tidies the rest of the matchmaking channel: the "Opened a
+lobby" message and the "Match found" post are deleted, and the submission notice
+disappears after a minute. Cancelling a match clears them in the same
 way. This can be turned off with `CLEAN_MATCH_POST=false`.
 
 **Checking the result.** The website reads the screenshot: the round score from
