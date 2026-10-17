@@ -30,6 +30,17 @@ underneath, oldest first. A lobby that nobody joins or leaves for
 `LOBBY_TIMEOUT_MINUTES` (30 by default) closes itself, and its players receive a
 short notice that it timed out.
 
+**Pinging players.** When `LOBBY_PING_ROLE_ID` is set, the bot mentions that role
+to gather players. A new lobby gets a ping when no lobby of its format (2v2 or
+3v3) has filled in the last `LOBBY_PING_QUIET_MINUTES` (30 by default), with at
+most one such ping every `LOBBY_PING_COOLDOWN_MINUTES` (5 by default), so
+opening lobbies of several formats at once pings only once. Any lobby that is
+one player short (5/6 or 3/4) also gets a ping, at most once per lobby per
+cooldown. A lobby's pings are deleted when it fills or closes (with
+`CLEAN_MATCH_POST`). The role must allow the bot to mention it: turn on "Allow
+anyone to @mention this role" in its settings, or give the bot the Mention
+@everyone, @here and All Roles permission.
+
 **Teams.** When a lobby is full, the website balances the teams using MMR from
 the current ranked season, and the bot posts them together with a random map.
 Unranked lobbies default to MMR Balance and avoid repeating the teams the

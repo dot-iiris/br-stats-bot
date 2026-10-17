@@ -40,6 +40,8 @@ class Lobby:
     message_id: Optional[int] = None
     opened_message_id: Optional[int] = None   # the "Opened a ... lobby" announcement
     last_activity: float = field(default_factory=time.time)  # last open/join/leave (for the timeout)
+    ping_message_ids: List[int] = field(default_factory=list)  # role pings about this lobby (tidied away with it)
+    last_spot_ping: float = 0                                  # when the role was last told it needs one more
 
     @property
     def size(self) -> int:
@@ -98,6 +100,8 @@ class Store:
         self.last_settings: Dict[str, dict] = {}  # channel id -> {format, mode, ranked, at}
         self.roled: List[int] = []   # members the bot gave the linked-player role to
         self.recent_teams: List[dict] = []   # last matches' teams: {"teams": [[player ids], [player ids]], "at"}
+        self.last_filled: Dict[str, float] = {}   # format -> when a lobby of it last filled (any channel)
+        self.last_open_ping: float = 0            # when the role was last pinged about a new lobby
         self.load()
 
     def load(self):
@@ -119,6 +123,8 @@ class Store:
         self.last_settings = data.get("last_settings") or {}
         self.roled = [int(x) for x in data.get("roled") or []]
         self.recent_teams = data.get("recent_teams") or []
+        self.last_filled = data.get("last_filled") or {}
+        self.last_open_ping = data.get("last_open_ping") or 0
 
     def save(self):
         tmp = self.path + ".tmp"
@@ -130,6 +136,8 @@ class Store:
                 "last_settings": self.last_settings,
                 "roled": self.roled,
                 "recent_teams": self.recent_teams,
+                "last_filled": self.last_filled,
+                "last_open_ping": self.last_open_ping,
             }, f, indent=2)
         os.replace(tmp, self.path)
 

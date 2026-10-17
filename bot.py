@@ -77,6 +77,13 @@ RESULT_CONFIRMATIONS_2V2 = int(os.getenv("RESULT_CONFIRMATIONS_2V2") or 3)      
 RESULT_LOSER_CONFIRMATIONS_2V2 = int(os.getenv("RESULT_LOSER_CONFIRMATIONS_2V2") or 1)
 # Role given to every member linked to a website player (taken back off when they're unlinked). 0 = off
 LINKED_ROLE_ID = int(os.getenv("LINKED_ROLE_ID") or 0)
+# Role pinged when players are needed (0 = off): when a lobby opens in a format that hasn't filled for
+# LOBBY_PING_QUIET_MINUTES (at most one of these per LOBBY_PING_COOLDOWN_MINUTES, whatever the format),
+# and when any lobby is one player short (once per lobby per cooldown). The role must be mentionable
+# by the bot (the role's "Allow anyone to @mention" setting, or the bot's Mention All Roles permission).
+LOBBY_PING_ROLE_ID = int(os.getenv("LOBBY_PING_ROLE_ID") or 0)
+LOBBY_PING_QUIET_MINUTES = float(os.getenv("LOBBY_PING_QUIET_MINUTES") or 30)
+LOBBY_PING_COOLDOWN_MINUTES = float(os.getenv("LOBBY_PING_COOLDOWN_MINUTES") or 5)
 # Once this many screenshots in a row were logged with no corrections (by players or admins),
 # results are shown as read with just a Confirm button. Any correction starts the count again. 0 = always allow fixes
 OCR_TRUST_STREAK = int(os.getenv("OCR_TRUST_STREAK") if os.getenv("OCR_TRUST_STREAK") is not None else 5)
@@ -232,6 +239,7 @@ async def close_lobby_posts(lobby: Lobby, note: str):
     task = _timeout_tasks.pop(lobby.id, None)
     if task and task is not asyncio.current_task():
         task.cancel()
+    await delete_pings(lobby)
     if CLEAN_MATCH_POST:
         await _delete_message(lobby.channel_id, lobby.message_id)
         await _delete_message(lobby.channel_id, lobby.opened_message_id)
@@ -350,6 +358,54 @@ async def _lobby_timeout(lobby_id: str):
 
 
 # ---------------------------------------------------------------- lobby flow
+def wants_open_ping(lobby: Lobby) -> bool:
+    """A new lobby: ping the role if nobody has played this format lately (one such ping per cooldown).
+    Called with bot.lock held."""
+    if not LOBBY_PING_ROLE_ID:
+        return False
+    now = time.time()
+    if now - bot.store.last_filled.get(lobby.format, 0) < LOBBY_PING_QUIET_MINUTES * 60:
+        return False
+    if now - bot.store.last_open_ping < LOBBY_PING_COOLDOWN_MINUTES * 60:
+        return False
+    bot.store.last_open_ping = now
+    return True
+
+
+def wants_last_spot_ping(lobby: Lobby) -> bool:
+    """One player short (5/6, 3/4): ping the role, once per lobby per cooldown. Called with bot.lock held."""
+    if not LOBBY_PING_ROLE_ID or len(lobby.members) != lobby.size - 1:
+        return False
+    now = time.time()
+    if now - lobby.last_spot_ping < LOBBY_PING_COOLDOWN_MINUTES * 60:
+        return False
+    lobby.last_spot_ping = now
+    return True
+
+
+async def ping_role(lobby: Lobby, text: str):
+    ch = await get_channel(lobby.channel_id)
+    if ch is None:
+        return
+    try:
+        msg = await ch.send(f"<@&{LOBBY_PING_ROLE_ID}> {text}",
+                            allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=True))
+    except discord.HTTPException as e:
+        log.warning("Couldn't ping the lobby role: %s", e)
+        return
+    lobby.ping_message_ids.append(msg.id)
+    bot.store.save()
+
+
+async def delete_pings(lobby: Lobby):
+    """The lobby filled or closed: its pings have done their job (only when tidying posts is on)."""
+    if not CLEAN_MATCH_POST:
+        return
+    for mid in lobby.ping_message_ids:
+        await _delete_message(lobby.channel_id, mid)
+    lobby.ping_message_ids = []
+
+
 def lobby_list(lobbies: list) -> str:
     return "\n".join(f"• **{lobby_title(l)}** ({len(l.members)}/{l.size})" for l in lobbies)
 
@@ -399,6 +455,12 @@ async def join_lobby(interaction: discord.Interaction, channel_id: int, lobby_id
         if len(lobby.members) >= lobby.size:
             await launch_match(lobby)
             return await reply(interaction, "Lobby full — teams are up!")
+        if created and wants_open_ping(lobby):   # before the lobby post, so the post stays at the bottom
+            await ping_role(lobby, f"A **{lobby_title(lobby)}** lobby just opened ({len(lobby.members)}/{lobby.size}) - "
+                                   "press **Join** or use /join.")
+        if wants_last_spot_ping(lobby):
+            await ping_role(lobby, f"The **{lobby_title(lobby)}** lobby needs **1 more player** "
+                                   f"({len(lobby.members)}/{lobby.size}) - press **Join**!")
         await update_lobby_board(lobby)
     if created and recent:
         extra = f" (opened a new **{lobby_title(lobby)}** lobby - same as the last match)"
@@ -450,7 +512,9 @@ async def launch_match(lobby: Lobby):
     if task and task is not asyncio.current_task():
         task.cancel()
     bot.store.remember_settings(lobby.channel_id, lobby.format, lobby.mode, lobby.ranked)
+    bot.store.last_filled[lobby.format] = time.time()
     bot.store.save()
+    await delete_pings(lobby)
     by_pid = {m.player_id: m for m in lobby.members}
     try:
         # unranked: the website avoids the teams these players had in their recent games
@@ -1168,6 +1232,9 @@ async def join_lobby_after_open(interaction: discord.Interaction, lobby: Lobby):
         if player and not bot.store.busy_reason(interaction.user.id) and lobby.id in bot.store.lobbies:
             lobby.members.append(Member(interaction.user.id, player["id"], player["name"]))
             bot.store.save()
+        if lobby.id in bot.store.lobbies and wants_open_ping(lobby):
+            await ping_role(lobby, f"A **{lobby_title(lobby)}** lobby just opened ({len(lobby.members)}/{lobby.size}) - "
+                                   "press **Join** or use /join.")
         await update_lobby_board(lobby)
     if not player:
         await reply(interaction, "You're not linked yet, so you weren't added. Use `/link` first, then /join.")
