@@ -64,26 +64,30 @@ lobby" message and the "Match found" post are deleted, and the submission notice
 disappears after a minute. Cancelling a match clears them in the same
 way. This can be turned off with `CLEAN_MATCH_POST=false`.
 
-**Checking the result.** The website reads the screenshot: the round score from
-the orbs, and each player's name, champion, score, damage, protection and
-disables. The bot posts what was read, with the screenshot, as a card for the
-players to check. The players can queue again straight away.
+**Checking the result.** The players are free to queue again as soon as the
+result is submitted. With a screenshot, the website first reads only the round
+score from the orbs, which takes well under a second, and the bot posts it with
+the screenshot as a card. The orbs show the score from the point of view of the
+team that took the screenshot, which is taken to be the submitter's team. The
+players only confirm the round score; any player in the match can correct it
+with the Round score button, which clears the existing confirmations (the
+player who made the correction counts as the first new one).
 
-Any player in the match can correct the round score, or any player's champion
-and statistics, with the edit buttons on the card. A correction clears the
-existing confirmations, and the player who made it counts as the first new one.
-The result is logged once `RESULT_CONFIRMATIONS` players (4 by default) have
-pressed Confirm, at least `RESULT_LOSER_CONFIRMATIONS` (2 by default) of them
-from the losing team. 2v2 matches use `RESULT_CONFIRMATIONS_2V2` (3 by default)
-and `RESULT_LOSER_CONFIRMATIONS_2V2` (1 by default) instead.
+Meanwhile the website reads the rest of the scoreboard: each player's name,
+champion, score, damage, protection and disables. These are not confirmed by
+the players. If the names show that the screenshot came from the other team,
+the score is corrected and confirmation starts again. The result is logged once
+`RESULT_CONFIRMATIONS` players (4 by default) have confirmed the score, at
+least `RESULT_LOSER_CONFIRMATIONS` (2 by default) of them from the losing team,
+and the scoreboard has been read. 2v2 matches use `RESULT_CONFIRMATIONS_2V2`
+(3 by default) and `RESULT_LOSER_CONFIRMATIONS_2V2` (1 by default) instead.
 
-Once `OCR_TRUST_STREAK` screenshots in a row (5 by default) have been logged
-without corrections, results are shown exactly as read, with only a Confirm
-button. If something is wrong, the players do not confirm and ask an
-administrator instead. Any correction, whether a player's edit or an
-administrator changing a screenshot result on the website before or after it is
-logged, starts the count again. Cards with a missing champion or score still
-show the edit buttons.
+Anything the reader was unsure of is logged with the match and listed for
+administrators under "Logged matches to check" on the website's Pending page.
+If a champion could not be read at all, the match is not logged automatically:
+it stays on the Pending page with the confirmed score for an administrator to
+finish. A result entered without a screenshot is checked in full by the
+players, as before, with edit buttons for each player's champion.
 
 Administrators can also log, correct or discard a result on the website's
 Pending page while it is being confirmed, and edit or delete it on the Matches
@@ -111,7 +115,7 @@ Players whose Battlerite name differs from their name on the website should run
 Administrators can change most of the bot's settings without restarting it,
 with `/admin settings` and `/admin maps` in Discord or on the website's
 Settings page: lobby timeouts and channels, the ping role and its timings,
-result confirmations, the screenshot trust streak, tidying of match posts, the
+result confirmations, tidying of match posts, the
 linked and admin roles, and separate map pools for 2v2 and 3v3. The website
 keeps the changed values and the bot reads them every minute, keeping a copy
 in `state.json` for when the website cannot be reached. The values in `.env`

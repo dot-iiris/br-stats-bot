@@ -108,12 +108,21 @@ class WebsiteApi:
     async def create_pending_match(self, payload: dict) -> dict:
         return await self._req("POST", "/pending-matches", json=payload)
 
-    async def upload_screenshot(self, pending_id: str, data: bytes, filename: str, uploaded_by: str) -> dict:
+    async def upload_screenshot(self, pending_id: str, data: bytes, filename: str, uploaded_by: str,
+                                quick: bool = False) -> dict:
+        """quick: only the round score is read before answering; the rest is read in the background
+        (the pending match gets "parsed_at" when it's done)."""
         form = aiohttp.FormData()
         form.add_field("file", data, filename=filename)
-        # reading the screenshot takes a few seconds on the website
+        params = {"uploaded_by": uploaded_by}
+        if quick:
+            params["quick"] = "true"
         return await self._req("POST", f"/pending-matches/{pending_id}/screenshot", data=form,
-                               params={"uploaded_by": uploaded_by}, timeout=aiohttp.ClientTimeout(total=120))
+                               params=params, timeout=aiohttp.ClientTimeout(total=120))
+
+    async def flag_pending(self, pending_id: str, payload: dict) -> dict:
+        """The players confirmed the score but the match can't be logged as read: an admin finishes it."""
+        return await self._req("POST", f"/pending-matches/{pending_id}/needs-admin", json=payload)
 
     async def pending_match(self, pending_id: str) -> dict:
         return await self._req("GET", f"/pending-matches/{pending_id}")

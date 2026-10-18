@@ -90,9 +90,10 @@ LINKED_ROLE_ID = int(os.getenv("LINKED_ROLE_ID") or 0)
 LOBBY_PING_ROLE_ID = int(os.getenv("LOBBY_PING_ROLE_ID") or 0)
 LOBBY_PING_QUIET_MINUTES = float(os.getenv("LOBBY_PING_QUIET_MINUTES") or 30)
 LOBBY_PING_COOLDOWN_MINUTES = float(os.getenv("LOBBY_PING_COOLDOWN_MINUTES") or 5)
-# Once this many screenshots in a row were logged with no corrections (by players or admins),
-# results are shown as read with just a Confirm button. Any correction starts the count again. 0 = always allow fixes
-OCR_TRUST_STREAK = int(os.getenv("OCR_TRUST_STREAK") if os.getenv("OCR_TRUST_STREAK") is not None else 5)
+# A submitted screenshot's full scoreboard (names, champions, stats) is read in the background while the
+# players confirm the round score; the bot checks for it every READ_POLL_SECONDS, for up to READ_WAIT_SECONDS.
+READ_POLL_SECONDS = 2
+READ_WAIT_SECONDS = 300
 
 
 # ---------------------------------------------------------------- settings admins can change
@@ -113,7 +114,6 @@ SETTING_GLOBALS = {   # setting -> (global it sets, converter)
     "RESULT_LOSER_CONFIRMATIONS": ("RESULT_LOSER_CONFIRMATIONS", int),
     "RESULT_CONFIRMATIONS_2V2": ("RESULT_CONFIRMATIONS_2V2", int),
     "RESULT_LOSER_CONFIRMATIONS_2V2": ("RESULT_LOSER_CONFIRMATIONS_2V2", int),
-    "OCR_TRUST_STREAK": ("OCR_TRUST_STREAK", int),
     "CLEAN_MATCH_POST": ("CLEAN_MATCH_POST", bool),
     "LINKED_ROLE_ID": ("LINKED_ROLE_ID", _role),
     "ADMIN_ROLE_IDS": ("ADMIN_ROLES", _id_set),
@@ -827,10 +827,17 @@ def losing_team(d: dict) -> Optional[str]:
     return "A" if a < b else "B"
 
 
-def draft_problems(d: dict) -> list:
+def draft_problems(d: dict, full: bool = False) -> list:
+    """What stops the players confirming. Screenshot results only need the round score (full=True:
+    everything needed to log the match)."""
     out = []
     if losing_team(d) is None:
         out.append("the round score" + (" can't be tied" if d.get("a_rounds") is not None and d.get("a_rounds") == d.get("b_rounds") else ""))
+    if d.get("mode") == "score" and not full:
+        teams = [info["team"] for info in d["players"].values()]
+        if teams.count("A") != teams.count("B"):
+            out.append("both teams need the same number of players (an admin can fix teams on the website)")
+        return out
     for info in d["players"].values():
         if not info.get("champion"):
             out.append(f"{info['name']}'s champion")
@@ -855,8 +862,61 @@ def _stat_line(stats: dict) -> str:
     return " · ".join(f"{STAT_SHORT[k]} {stats.get(k) if stats.get(k) is not None else '?'}" for k, _ in STAT_KEYS)
 
 
+def score_embed(m: Match, final: str = "") -> discord.Embed:
+    """Screenshot results: the players only confirm the round score."""
+    d = m.draft
+    need, need_losers = confirms_needed(m)
+    a, b = d.get("a_rounds"), d.get("b_rounds")
+    score = f"Team A **{a if a is not None else '?'} – {b if b is not None else '?'}** Team B"
+    done = final.startswith("✅")
+    e = discord.Embed(title=f"Match #{m.id} — confirm the score",
+                      colour=GREEN if done else GREY if final else discord.Colour.gold())
+    rule = f"It's logged once **{need}** players confirm, at least **{need_losers}** from the losing team."
+    if final:
+        e.description = f"{score} · {m.map}\n\n{final}"
+    elif d.get("waiting_admin"):
+        e.description = (f"{score} · {m.map}\n\n✅ Score confirmed. {d['waiting_admin']} - an admin will finish "
+                         f"logging it on the website. You don't need to do anything.")
+    elif d.get("score_confirmed"):
+        e.description = f"{score} · {m.map}\n\n✅ Score confirmed - it's logged as soon as the scoreboard has been read."
+    else:
+        e.description = (f"{score} · {m.map}\n\nCheck the **round score** against the screenshot and confirm it - "
+                         f"that's all you need to check. The rest of the scoreboard is read automatically. "
+                         f"Wrong score? Fix it with ✏️ Round score (a fix clears the confirmations). "
+                         f"Wrong screenshot? Message an admin.\n{rule}")
+    loser = losing_team(d)
+    for t in ("A", "B"):
+        rows = [i for i in d["players"].values() if i["team"] == t]
+        tag = "" if loser is None else (" · lost" if t == loser else " · won")
+        lines = "\n".join(f"{'✅ ' if i['discord_id'] in m.confirms else ''}**{i['name']}**"
+                          + (f" · {i.get('champion') or '❓'}" if d.get("read_done") else "") for i in rows)
+        e.add_field(name=f"Team {t}{tag}", value=lines or "-", inline=True)
+    if not final:
+        notes = d.get("read_notes") or []
+        status = ("Read ✓" + (f" · {len(notes)} note{'s' if len(notes) != 1 else ''} for admins" if notes else "")) \
+            if d.get("read_done") else "📖 Reading names, champions and stats…"
+        e.add_field(name="Scoreboard", value=status, inline=False)
+        problems = draft_problems(d)
+        if problems:
+            e.add_field(name="Needs fixing before anyone can confirm", value="\n".join(f"• {p}" for p in problems)[:1024], inline=False)
+        elif not d.get("score_confirmed"):
+            got, got_losers = confirm_counts(m)
+            e.add_field(name="Confirmations",
+                        value=f"**{got}/{need}** confirmed · losing team **{min(got_losers, need_losers)}/{need_losers}**",
+                        inline=False)
+        if d.get("warnings"):
+            e.add_field(name="Screenshot notes", value="\n".join(f"• {w}" for w in d["warnings"])[:1024], inline=False)
+    if d.get("edits"):
+        e.add_field(name="Changes", value="\n".join(d["edits"][-4:])[:1024], inline=False)
+    e.set_image(url=f"attachment://{d.get('shot_name') or 'scoreboard.png'}")
+    e.set_footer(text="Admins can still change or discard results on the website")
+    return e
+
+
 def result_embed(m: Match, final: str = "") -> discord.Embed:
     d = m.draft
+    if d.get("mode") == "score":
+        return score_embed(m, final)
     need, need_losers = confirms_needed(m)
     a, b = d.get("a_rounds"), d.get("b_rounds")
     score = f"Team A **{a if a is not None else '?'} – {b if b is not None else '?'}** Team B"
@@ -865,9 +925,6 @@ def result_embed(m: Match, final: str = "") -> discord.Embed:
     rule = f"It's logged once **{need}** players confirm, at least **{need_losers}** from the losing team."
     if final:
         e.description = f"{score} · {m.map}\n\n{final}"
-    elif locked(m):
-        e.description = (f"{score} · {m.map}\n\nCheck the result against the screenshot. If the wrong screenshot "
-                         f"was uploaded or something's wrong, don't confirm - message an admin.\n{rule}")
     elif not m.has_screenshot:
         e.description = (f"{score} · {m.map}\n\nTyped in by {(m.report or {}).get('by_name', '?')} (no screenshot). Anything "
                          f"wrong? Any player in the match can fix it with the ✏️ buttons (a fix clears the confirmations). "
@@ -902,19 +959,17 @@ def result_embed(m: Match, final: str = "") -> discord.Embed:
     return e
 
 
-def locked(m: Match) -> bool:
-    """Trusted screenshot read with nothing missing: players only confirm, no fixes."""
-    return bool(m.draft.get("trusted")) and not draft_problems(m.draft)
-
-
-def result_view(m: Match) -> discord.ui.View:
+def result_view(m: Match) -> Optional[discord.ui.View]:
+    d = m.draft
+    if d.get("mode") == "score" and (d.get("score_confirmed") or d.get("waiting_admin")):
+        return None   # nothing left for the players to do
     v = discord.ui.View(timeout=None)
     v.add_item(discord.ui.Button(label="Confirm", emoji="✅", style=discord.ButtonStyle.success,
                                  custom_id=f"brs:res:ok:{m.id}", disabled=bool(draft_problems(m.draft)), row=0))
-    if locked(m):
-        return v
     v.add_item(discord.ui.Button(label="Round score", emoji="✏️", style=discord.ButtonStyle.secondary,
                                  custom_id=f"brs:res:score:{m.id}", row=0))
+    if d.get("mode") == "score":
+        return v
     for n, (pid, info) in enumerate(sorted(m.draft["players"].items(), key=lambda x: x[1]["team"])):
         v.add_item(discord.ui.Button(label=info["name"][:70], emoji="✏️", style=discord.ButtonStyle.secondary,
                                      custom_id=f"brs:res:p:{m.id}:{pid}", row=1 + n // 4))
@@ -990,9 +1045,11 @@ async def handle_result_button(interaction: discord.Interaction, action: str, ma
     if me not in m.all_ids():
         return await reply(interaction, "Only players in this match can confirm or fix it. "
                                         "(Admins: change it on the website's Pending page.)")
-    if action in ("score", "p") and locked(m):
-        return await reply(interaction, "This result can't be changed here. If the wrong screenshot was uploaded or "
-                                        "something's wrong, don't confirm - message an admin.")
+    d = m.draft
+    if d.get("mode") == "score" and (d.get("score_confirmed") or d.get("waiting_admin")):
+        return await reply(interaction, "The score is already confirmed - nothing more to do here.")
+    if action == "p" and d.get("mode") == "score":
+        return await reply(interaction, "Only the round score is checked here - an admin can fix anything else on the website.")
     if action == "score":
         return await interaction.response.send_modal(ScoreModal(m))
     if action == "p":
@@ -1015,8 +1072,178 @@ async def handle_result_button(interaction: discord.Interaction, action: str, ma
     need, need_losers = confirms_needed(m)
     got, got_losers = confirm_counts(m)
     if got >= need and got_losers >= need_losers:
+        if m.draft.get("mode") == "score":
+            async with bot.lock:
+                m.draft["score_confirmed"] = True
+                bot.store.save()
+            if m.draft.get("read_done"):
+                return await log_score_result(m, interaction)
+            return await interaction.edit_original_response(embed=result_embed(m), view=result_view(m))
         return await log_confirmed(interaction, m)
     await interaction.edit_original_response(embed=result_embed(m), view=result_view(m))
+
+
+# ---------------------------------------------------------------- screenshot results: score first
+_read_tasks: dict = {}
+
+
+def score_draft(m: Match, pending: dict, uploader_id: int, filename: str) -> dict:
+    """A screenshot result before the full read: the teams and the round score from the orbs. The
+    orbs say 'your team' and 'enemy team' - taken to be the submitter's team and the other one."""
+    players = {}
+    for team, side in (("A", m.team_a), ("B", m.team_b)):
+        for p in side:
+            players[p["player_id"]] = {"name": p["name"], "discord_id": p["discord_id"], "team": team,
+                                       "champion": None, "stats": {k: None for k, _ in STAT_KEYS}}
+    q = pending.get("quick_rounds") or {}
+    yours, theirs, side = q.get("your"), q.get("enemy"), m.team_of(uploader_id)
+    a = b = None
+    warnings = []
+    if yours is None or theirs is None or yours == theirs:
+        warnings.append("Couldn't read the round score from the screenshot - enter it with ✏️ Round score")
+    elif side is None:
+        warnings.append("The screenshot wasn't submitted by a player in the match - enter the score with ✏️ Round score")
+    else:
+        a, b = (yours, theirs) if side == "A" else (theirs, yours)
+    return {"mode": "score", "a_rounds": a, "b_rounds": b, "players": players, "warnings": warnings, "edits": [],
+            "shot_name": _shot_name(filename), "read_done": False, "score_confirmed": False, "read_notes": []}
+
+
+async def edit_result_card(m: Match):
+    if not m.result_message_id:
+        return
+    ch = await get_channel(m.channel_id)
+    try:
+        msg = await ch.fetch_message(m.result_message_id)
+        await msg.edit(embed=result_embed(m), view=result_view(m))
+    except (discord.HTTPException, AttributeError) as e:
+        log.warning("Couldn't update the result card of match %s: %s", m.id, e)
+
+
+def watch_read(m: Match):
+    """Wait for the website to finish reading the scoreboard (one small task per screenshot)."""
+    t = _read_tasks.get(m.pending_id)
+    if t is None or t.done():
+        _read_tasks[m.pending_id] = asyncio.get_running_loop().create_task(_read_watch(m.pending_id))
+
+
+async def _read_watch(pending_id: str):
+    waited = 0.0
+    while waited < READ_WAIT_SECONDS:
+        await asyncio.sleep(READ_POLL_SECONDS)
+        waited += READ_POLL_SECONDS
+        m = bot.store.reviews.get(pending_id)
+        if not m or not m.draft or m.draft.get("mode") != "score" or m.draft.get("read_done"):
+            return
+        try:
+            pm = await bot.api.pending_match(pending_id)
+        except ApiError as e:
+            if e.status == 404:
+                await refresh_from_website(m)
+                return
+            continue   # website busy or restarting - keep waiting
+        if pm.get("status") != "pending":
+            await refresh_from_website(m)
+            return
+        if pm.get("parsed_at"):
+            return await apply_full_read(m, pm)
+    m = bot.store.reviews.get(pending_id)
+    if m and m.draft and not m.draft.get("read_done"):
+        async with bot.lock:
+            m.draft["read_done"] = True
+            m.draft["read_notes"] = ["The scoreboard wasn't read in time - fill in the champions and stats"]
+            bot.store.save()
+        await edit_result_card(m)
+        await maybe_log(m)
+
+
+async def apply_full_read(m: Match, pm: dict):
+    """The full scoreboard is in: fill in champions and stats; the read's score replaces the orbs-only
+    one unless a player already fixed it."""
+    pre = pm.get("prefill") or {}
+    full = new_draft(m, pm)
+    async with bot.lock:
+        d = m.draft
+        typed = d.get("typed_champions") or {}
+        for pid, info in full["players"].items():
+            if pid in d["players"]:
+                d["players"][pid].update(champion=info.get("champion") or typed.get(pid),
+                                         stats=info["stats"], team=info["team"])
+        notes = list(pre.get("warnings") or [])
+        pa, pb = pre.get("team_a_rounds"), pre.get("team_b_rounds")
+        if pa is not None and pb is not None and pa != pb and (pa, pb) != (d.get("a_rounds"), d.get("b_rounds")):
+            if d.get("score_edited"):
+                notes.append(f"The players set the score to {d.get('a_rounds')}-{d.get('b_rounds')}, "
+                             f"but the screenshot reads {pa}-{pb}")
+            else:
+                if d.get("a_rounds") is not None:
+                    d["edits"] = (d.get("edits") or [])[-9:] + [
+                        f"📖 Score corrected from the full scoreboard: {d['a_rounds']}-{d['b_rounds']} → {pa}-{pb}"]
+                d["a_rounds"], d["b_rounds"] = pa, pb
+                d["warnings"] = []
+                if m.confirms:      # they confirmed a different score - ask again
+                    m.confirms, d["score_confirmed"] = [], False
+        d["read_done"], d["read_notes"] = True, notes
+        bot.store.save()
+    await edit_result_card(m)
+    await maybe_log(m)
+
+
+async def maybe_log(m: Match):
+    if m.draft.get("score_confirmed") and m.draft.get("read_done") and not m.draft.get("waiting_admin"):
+        await log_score_result(m)
+
+
+async def log_score_result(m: Match, interaction: Optional[discord.Interaction] = None):
+    """Score confirmed and scoreboard read: log it, with anything odd noted for admins. If it can't be
+    logged as read (a champion missing), it waits on the website's Pending page for an admin."""
+    d = m.draft
+    names = {i["discord_id"]: i["name"] for i in d["players"].values()}
+    confirmed_by = ", ".join(names.get(x, "?") for x in m.confirms)
+    blockers = draft_problems(d, full=True)
+    if blockers:
+        reasons = [f"Missing or wrong: {p}" for p in blockers] + (d.get("read_notes") or [])
+        try:
+            await bot.api.flag_pending(m.pending_id, {"reasons": reasons, "team_a_rounds": d["a_rounds"],
+                                                      "team_b_rounds": d["b_rounds"], "confirmed_by": confirmed_by})
+        except ApiError as e:
+            if e.status in (404, 409):
+                await refresh_from_website(m)
+                return
+            log.warning("Couldn't flag match %s for an admin: %s", m.id, e.detail)
+        async with bot.lock:
+            d["waiting_admin"] = "The scoreboard couldn't be fully read (" + "; ".join(blockers)[:200] + ")"
+            bot.store.save()
+        ensure_review_watcher()   # settles the card once an admin logs it
+        if interaction is not None:
+            return await interaction.edit_original_response(embed=result_embed(m), view=result_view(m))
+        return await edit_result_card(m)
+    players = []
+    for pid, i in d["players"].items():
+        stats = {k: v for k, v in i["stats"].items() if v is not None}
+        players.append({"player_id": pid, "champion": i["champion"], "team": i["team"], "stats": stats or None})
+    try:
+        await bot.api.complete_pending(m.pending_id, {
+            "players": players, "team_a_rounds": d["a_rounds"], "team_b_rounds": d["b_rounds"],
+            "confirmed_by": confirmed_by, "needs_check": d.get("read_notes") or None,
+        })
+    except ApiError as e:
+        if e.status in (404, 409):
+            await refresh_from_website(m)
+            return
+        log.warning("Couldn't log match %s: %s", m.id, e.detail)
+        async with bot.lock:
+            d["score_confirmed"] = False   # let the next confirm try again
+            bot.store.save()
+        if interaction is not None:
+            await interaction.edit_original_response(embed=result_embed(m), view=result_view(m))
+            await interaction.followup.send(f"Confirmed, but the website didn't take it: {e.detail}. "
+                                            "Try confirming again later, or ask an admin.", ephemeral=True)
+        else:
+            await edit_result_card(m)
+        return
+    where = f" - see the result in <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."
+    await settle_review(m, True, f"✅ Score confirmed by the players and logged{where}")
 
 
 async def log_confirmed(interaction: discord.Interaction, m: Match):
@@ -1053,6 +1280,7 @@ async def apply_edit(interaction: discord.Interaction, m: Match, changes: list, 
         who = interaction.user.display_name
         m.draft["edits"] = (m.draft.get("edits") or [])[-9:] + [f"✏️ {who}: " + "; ".join(changes)]
         m.confirms = [] if draft_problems(m.draft) else [interaction.user.id]
+        m.draft["score_confirmed"] = False
         bot.store.save()
     try:
         await interaction.response.edit_message(embed=result_embed(m), view=result_view(m))
@@ -1089,7 +1317,7 @@ class ScoreModal(discord.ui.Modal):
         d = self.m.draft
         changes = [] if (a, b) == (d.get("a_rounds"), d.get("b_rounds")) else \
             [f"score {d.get('a_rounds', '?')}-{d.get('b_rounds', '?')} → {a}-{b}"]
-        await apply_edit(interaction, self.m, changes, lambda: d.update(a_rounds=a, b_rounds=b))
+        await apply_edit(interaction, self.m, changes, lambda: d.update(a_rounds=a, b_rounds=b, score_edited=True, warnings=[]))
 
 
 class PlayerModal(discord.ui.Modal):
@@ -1386,12 +1614,6 @@ def _shot_name(filename: str) -> str:
     return "scoreboard" + (ext if ext in (".png", ".jpg", ".jpeg", ".webp") else ".png")
 
 
-def _trusted(m: Match, pending: dict) -> bool:
-    """The reader has been right often enough in a row: show what it read, no corrections."""
-    return bool(OCR_TRUST_STREAK and m.has_screenshot and (pending.get("ocr_streak") or 0) >= OCR_TRUST_STREAK
-                and not m.draft.get("warnings") and not draft_problems(m.draft))
-
-
 async def finish_submit(interaction: discord.Interaction, m: Match, data: Optional[bytes] = None,
                         filename: str = "", rounds: Optional[tuple] = None, champs: Optional[dict] = None):
     async with bot.lock:
@@ -1413,29 +1635,32 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
     except ApiError as e:
         m.status = "live"
         return await reply(interaction, f"The website rejected it: {e.detail}. Nothing was saved - try again.", ephemeral=False)
-    upload_note = None
-    if data:
-        try:
-            pending = await bot.api.upload_screenshot(pending["id"], data, filename, interaction.user.display_name)
-        except ApiError as e:
-            data = None
-            upload_note = (f"The screenshot wasn't used ({e.detail}). Fill in the result with the ✏️ buttons, "
-                           "or `/submit` the right screenshot.")
-    async with bot.lock:
+    async with bot.lock:   # the players are free to queue again straight away
         m.status = "review"
         m.pending_id = pending["id"]
         m.report = {"by_name": interaction.user.display_name, "manual": not data}
         m.draft = new_draft(m, pending)
         for pid, champ in (champs or {}).items():
             m.draft["players"][pid]["champion"] = champ
-        m.has_screenshot = bool(data)
-        if data:
-            m.draft["shot_name"] = _shot_name(filename)
-        m.draft["trusted"] = _trusted(m, pending)
+        m.has_screenshot = False
         m.confirms = []
-        bot.store.matches.pop(m.id, None)      # players are free to queue again
+        bot.store.matches.pop(m.id, None)
         bot.store.reviews[m.pending_id] = m
         bot.store.save()
+    upload_note = None
+    if data:
+        try:   # only the round score is read before this returns; the rest follows in the background
+            pending = await bot.api.upload_screenshot(pending["id"], data, filename, interaction.user.display_name,
+                                                      quick=True)
+            async with bot.lock:
+                m.draft = score_draft(m, pending, interaction.user.id, filename)
+                m.has_screenshot = True
+                bot.store.save()
+            watch_read(m)
+        except ApiError as e:
+            data = None
+            upload_note = (f"The screenshot wasn't used ({e.detail}). Fill in the result with the ✏️ buttons, "
+                           "or `/submit` the right screenshot.")
     if CLEAN_MATCH_POST:
         await tidy_up_match(m)
     else:
@@ -1444,7 +1669,8 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
     ensure_review_watcher()
     note = f"\n{upload_note}" if upload_note else ""
     need, need_losers = confirms_needed(m)
-    await reply(interaction, f"Match #{m.id} submitted - **check the result below** and confirm it. "
+    what = "**confirm the round score below**" if m.has_screenshot else "**check the result below** and confirm it"
+    await reply(interaction, f"Match #{m.id} submitted - you can queue again. Now {what}. "
                              f"It's logged once {need} players confirm, at least {need_losers} from the losing team.{note}",
                 ephemeral=False)
     await _expire_reply(interaction)
@@ -1463,31 +1689,27 @@ async def add_screenshot(interaction: discord.Interaction, m: Match, screenshot:
     await interaction.response.defer(thinking=True)
     data = await screenshot.read()
     try:
-        pending = await bot.api.upload_screenshot(m.pending_id, data, screenshot.filename, interaction.user.display_name)
+        pending = await bot.api.upload_screenshot(m.pending_id, data, screenshot.filename, interaction.user.display_name,
+                                                  quick=True)
     except ApiError as e:
         if e.status in (404, 409) and not await refresh_from_website(m):
             return await reply(interaction, f"Match #{m.id} was already settled on the website.")
         return await reply(interaction, f"Couldn't use that screenshot: {e.detail}")
     async with bot.lock:
         old = m.draft
-        new = new_draft(m, pending)
-        pre = pending.get("prefill") or {}
-        a, b = pre.get("team_a_rounds"), pre.get("team_b_rounds")
-        new["a_rounds"], new["b_rounds"] = (a, b) if a is not None and b is not None and a != b else \
-            (old.get("a_rounds"), old.get("b_rounds"))
-        for pid, info in new["players"].items():
-            if not info.get("champion"):
-                info["champion"] = old["players"][pid].get("champion")
+        new = score_draft(m, pending, interaction.user.id, screenshot.filename)
+        if new["a_rounds"] is None and losing_team(old):   # orbs unreadable: keep the typed score
+            new["a_rounds"], new["b_rounds"], new["warnings"] = old.get("a_rounds"), old.get("b_rounds"), []
+        new["typed_champions"] = {pid: i.get("champion") for pid, i in old["players"].items() if i.get("champion")}
         new["edits"] = (old.get("edits") or [])[-9:] + [f"📷 {interaction.user.display_name} added the screenshot"]
-        new["shot_name"] = _shot_name(screenshot.filename)
         m.draft, m.has_screenshot, m.confirms = new, True, []
-        m.draft["trusted"] = _trusted(m, pending)
         old_card, m.result_message_id = m.result_message_id, None
         bot.store.save()
     await _delete_message(m.channel_id, old_card)
     await post_result_card(m, data)
+    watch_read(m)
     await reply(interaction, f"Screenshot added to match #{m.id} - the confirmations started again. "
-                             "Check the result below and confirm it.", ephemeral=False)
+                             "Confirm the round score below.", ephemeral=False)
     await _expire_reply(interaction)
 
 
@@ -1982,6 +2204,12 @@ async def on_ready():
     log.info("Logged in as %s (%s). Website API: %s", bot.user, bot.user.id, API_URL)
     _said_hello = False   # (re)send the defaults, roles and channels
     ensure_settings_watcher()
+    for m in list(bot.store.reviews.values()):   # screenshots still being read when the bot stopped
+        if m.draft and m.draft.get("mode") == "score":
+            if not m.draft.get("read_done"):
+                watch_read(m)
+            else:
+                await maybe_log(m)
 
 
 def main():
