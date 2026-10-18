@@ -113,6 +113,12 @@ changes MMR. Two Discord posts are handled by the website rather than the bot:
   website's `backend/.env`, the website keeps a single leaderboard post in that
   channel up to date whenever a match is logged, edited or deleted.
 
+**Tournaments.** Tournament matches are set up on the website. A player whose
+team has a tournament match to play, and who is not in a lobby match, can `/submit` each game
+of it in the usual way: the bot finds the match, the players confirm the result, and the game
+counts towards that series on the website's tournament page. Tournament games are kept apart
+from lobby matches: they don't change MMR or count in the ranked or unranked stats.
+
 Players whose Battlerite name differs from their name on the website should run
 `/ign` once, so that their scoreboard rows are matched to them reliably.
 

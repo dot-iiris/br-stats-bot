@@ -79,6 +79,7 @@ class Match:
     confirms: List[int] = field(default_factory=list)   # discord ids that confirmed the current draft
     result_message_id: Optional[int] = None
     has_screenshot: bool = False
+    tournament_match_id: Optional[str] = None   # a game in a tournament match (not from a lobby)
 
     def team_of(self, discord_id: int) -> Optional[str]:
         if any(p["discord_id"] == discord_id for p in self.team_a):

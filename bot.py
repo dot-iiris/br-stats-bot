@@ -1038,7 +1038,9 @@ async def refresh_from_website(m: Match) -> bool:
     if pm.get("status") == "pending":
         return True
     if pm.get("status") == "completed":
-        await settle_review(m, True, "✅ Logged by an admin" + (f" - see <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."))
+        await settle_review(m, True, "✅ Logged by an admin" + (
+            " to the tournament." if m.tournament_match_id else
+            f" - see <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."))
     else:
         await settle_review(m, False, "❌ Discarded by an admin.")
     return False
@@ -1249,7 +1251,8 @@ async def log_score_result(m: Match, interaction: Optional[discord.Interaction] 
         else:
             await edit_result_card(m)
         return
-    where = f" - see the result in <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."
+    where = " to the tournament." if m.tournament_match_id else \
+        f" - see the result in <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."
     await settle_review(m, True, f"✅ Score confirmed by the players and logged{where}")
 
 
@@ -1272,7 +1275,8 @@ async def log_confirmed(interaction: discord.Interaction, m: Match):
         await interaction.edit_original_response(embed=result_embed(m), view=result_view(m))
         return await interaction.followup.send(f"Confirmed, but the website didn't take it: {e.detail}. "
                                                "Try confirming again later, or ask an admin.", ephemeral=True)
-    where = f" - see the result in <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."
+    where = " to the tournament." if m.tournament_match_id else \
+        f" - see the result in <#{MATCH_HISTORY_CHANNEL}>." if MATCH_HISTORY_CHANNEL else "."
     await settle_review(m, True, f"✅ Confirmed by the players and logged{where}")
 
 
@@ -1599,6 +1603,11 @@ async def submit(interaction: discord.Interaction, screenshot: Optional[discord.
     else:
         m = next((x for x in bot.store.matches.values() if x.team_of(me)), None) or \
             next((x for x in bot.store.reviews.values() if x.team_of(me) and x.draft and not x.has_screenshot), None)
+    if not m and not match_id:   # not in a lobby match: the next game of your tournament match, if any
+        m = await tournament_game(interaction)
+        if m and any(r.tournament_match_id == m.tournament_match_id for r in bot.store.reviews.values()):
+            return await reply(interaction, "The last game of your tournament match is still being confirmed - "
+                                            "confirm it on its card first, then `/submit` this one.")
     if not m:
         return await reply(interaction, "You don't have a match to submit. (Admins: add `match_id`.)")
     if m.status == "review":   # submitted without a screenshot - a screenshot replaces the typed result
@@ -1616,6 +1625,30 @@ async def submit(interaction: discord.Interaction, screenshot: Optional[discord.
     await finish_submit(interaction, m, data=await screenshot.read(), filename=screenshot.filename)
 
 
+async def tournament_game(interaction: discord.Interaction) -> Optional[Match]:
+    """A one-off match for the next game of the member's tournament match (each game is /submitted
+    on its own, like a lobby game, and counts towards that series on the website)."""
+    try:
+        tm = await bot.api.tournament_match(interaction.user.id)
+    except ApiError:
+        return None
+    if not tm:
+        return None
+    try:
+        code = await bot.api.reserve_match_code(tm["format"], tm["ranked"])
+    except (ApiError, KeyError, TypeError):
+        code = bot.store.new_match_id()
+
+    def side(team):
+        return [{"discord_id": int(p["discord_id"]) if p.get("discord_id") else 0, "player_id": p["player_id"],
+                 "name": p["name"], "mmr": 0} for p in team["players"]]
+    game = tm["wins1"] + tm["wins2"] + 1
+    where = f"{tm['tournament_name']} · {tm['label']}" + (f" · game {game} (Bo{tm['best_of']})" if tm["best_of"] > 1 else "")
+    return Match(id=code, channel_id=interaction.channel_id, format=tm["format"], mode="hybrid", ranked=tm["ranked"],
+                 map=where, team_a=side(tm["team1"]), team_b=side(tm["team2"]), lobby_channel_id=interaction.channel_id,
+                 tournament_match_id=tm["tournament_match_id"])
+
+
 def _shot_name(filename: str) -> str:
     ext = os.path.splitext(filename or "")[1].lower()
     return "scoreboard" + (ext if ext in (".png", ".jpg", ".jpeg", ".webp") else ".png")
@@ -1624,7 +1657,7 @@ def _shot_name(filename: str) -> str:
 async def finish_submit(interaction: discord.Interaction, m: Match, data: Optional[bytes] = None,
                         filename: str = "", rounds: Optional[tuple] = None, champs: Optional[dict] = None):
     async with bot.lock:
-        if m.status != "live" or m.id not in bot.store.matches:
+        if m.status != "live" or (m.id not in bot.store.matches and not m.tournament_match_id):
             return await reply(interaction, "This match was already submitted or cancelled.")
         m.status = "submitting"
     try:
@@ -1637,6 +1670,7 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
             "team_a_rounds": rounds[0] if rounds else None, "team_b_rounds": rounds[1] if rounds else None,
             "balance_mode": m.mode, "map": m.map, "reported_by": interaction.user.display_name,
             "source": "discord", "source_ref": jump, "discord_match_id": m.id,
+            "tournament_match_id": m.tournament_match_id,
             "notes": "" if data else "No screenshot",   # the match code is shown on the website already
         })
     except ApiError as e:

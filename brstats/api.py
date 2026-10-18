@@ -55,6 +55,16 @@ class WebsiteApi:
     async def reset_setting(self, key: str) -> dict:
         return await self._req("DELETE", f"/bot/settings/{key}")
 
+    # --- tournaments ---
+    async def tournament_match(self, discord_id: int) -> Optional[dict]:
+        """The tournament match this member's team plays next, or None."""
+        try:
+            return await self._req("GET", "/bot/tournament-match", params={"discord_id": str(discord_id)})
+        except ApiError as e:
+            if e.status == 404:
+                return None
+            raise
+
     # --- players / linking ---
     async def player_by_discord(self, discord_id: int) -> Optional[dict]:
         try:
