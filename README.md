@@ -65,7 +65,8 @@ disappears after a minute. Cancelling a match clears them in the same
 way. This can be turned off with `CLEAN_MATCH_POST=false`.
 
 **Checking the result.** The players are free to queue again as soon as the
-result is submitted. With a screenshot, the website first reads only the round
+result is submitted (with `REJOIN_AFTER=confirmed`, only once it has been
+confirmed). With a screenshot, the website first reads only the round
 score from the orbs, which takes well under a second, and the bot posts it with
 the screenshot as a card. The orbs show the score from the point of view of the
 team that took the screenshot, which is taken to be the submitter's team. The

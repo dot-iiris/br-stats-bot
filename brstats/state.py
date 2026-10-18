@@ -144,12 +144,18 @@ class Store:
             }, f, indent=2)
         os.replace(tmp, self.path)
 
-    def busy_reason(self, discord_id: int) -> Optional[str]:
+    def busy_reason(self, discord_id: int, until_confirmed: bool = False) -> Optional[str]:
         """Why this player can't join a lobby right now (None if they can). Being in other
-        lobbies is fine - a player can queue in several at once."""
+        lobbies is fine - a player can queue in several at once. until_confirmed: a submitted
+        result also has to be confirmed (or settled) first."""
         for m in self.matches.values():
             if discord_id in m.all_ids():
                 return f"you're still in match #{m.id} - submit or cancel it first"
+        if until_confirmed:
+            for m in self.reviews.values():
+                d = m.draft or {}
+                if discord_id in m.all_ids() and not (d.get("score_confirmed") or d.get("waiting_admin")):
+                    return f"match #{m.id}'s result still needs confirming - confirm it on its card first"
         return None
 
     def lobbies_in(self, channel_id: int) -> List[Lobby]:

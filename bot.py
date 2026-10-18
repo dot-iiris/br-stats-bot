@@ -94,6 +94,8 @@ LOBBY_PING_COOLDOWN_MINUTES = float(os.getenv("LOBBY_PING_COOLDOWN_MINUTES") or 
 # players confirm the round score; the bot checks for it every READ_POLL_SECONDS, for up to READ_WAIT_SECONDS.
 READ_POLL_SECONDS = 2
 READ_WAIT_SECONDS = 300
+# Players can join a lobby again once their result is "submit"ted (default) or only once it's "confirmed"
+REJOIN_AFTER = "confirmed" if (os.getenv("REJOIN_AFTER") or "").strip().lower() == "confirmed" else "submit"
 # What players confirm on a screenshot result: "score" - just the round score (the rest is read in the
 # background and logged with it); "full" - every champion and stat, which they can fix first
 RESULT_CHECK = "full" if (os.getenv("RESULT_CHECK") or "").strip().lower() == "full" else "score"
@@ -117,6 +119,7 @@ SETTING_GLOBALS = {   # setting -> (global it sets, converter)
     "RESULT_LOSER_CONFIRMATIONS": ("RESULT_LOSER_CONFIRMATIONS", int),
     "RESULT_CONFIRMATIONS_2V2": ("RESULT_CONFIRMATIONS_2V2", int),
     "RESULT_LOSER_CONFIRMATIONS_2V2": ("RESULT_LOSER_CONFIRMATIONS_2V2", int),
+    "REJOIN_AFTER": ("REJOIN_AFTER", lambda v: "confirmed" if str(v).strip().lower() == "confirmed" else "submit"),
     "RESULT_CHECK": ("RESULT_CHECK", lambda v: "full" if str(v).strip().lower() == "full" else "score"),
     "CLEAN_MATCH_POST": ("CLEAN_MATCH_POST", bool),
     "LINKED_ROLE_ID": ("LINKED_ROLE_ID", _role),
@@ -482,7 +485,7 @@ async def join_lobby(interaction: discord.Interaction, channel_id: int, lobby_id
     me = interaction.user.id
     created = recent = None
     async with bot.lock:
-        busy = bot.store.busy_reason(me)
+        busy = bot.store.busy_reason(me, REJOIN_AFTER == "confirmed")
         if busy:
             return await reply(interaction, f"Can't join: {busy}.")
         if lobby_id:
@@ -1493,7 +1496,7 @@ async def lobby_open(interaction: discord.Interaction, format: Optional[app_comm
         return await reply(interaction, "Lobbies aren't allowed in this channel.")
     # unranked lobbies balance by MMR alone unless told otherwise
     fmt, md = format.value if format else "3v3", mode.value if mode else ("hybrid" if ranked else "mmr")
-    busy = bot.store.busy_reason(interaction.user.id)
+    busy = bot.store.busy_reason(interaction.user.id, REJOIN_AFTER == "confirmed")
     if busy:
         return await reply(interaction, f"Can't open a lobby: {busy}.")
     async with bot.lock:
@@ -1517,7 +1520,7 @@ async def lobby_open(interaction: discord.Interaction, format: Optional[app_comm
 async def join_lobby_after_open(interaction: discord.Interaction, lobby: Lobby):
     player = await bot.api.player_by_discord(interaction.user.id)
     async with bot.lock:
-        if player and not bot.store.busy_reason(interaction.user.id) and lobby.id in bot.store.lobbies:
+        if player and not bot.store.busy_reason(interaction.user.id, REJOIN_AFTER == "confirmed") and lobby.id in bot.store.lobbies:
             lobby.members.append(Member(interaction.user.id, player["id"], player["name"]))
             bot.store.save()
         if lobby.id in bot.store.lobbies and wants_open_ping(lobby):
@@ -1680,7 +1683,8 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
     note = f"\n{upload_note}" if upload_note else ""
     need, need_losers = confirms_needed(m)
     what = "**confirm the round score below**" if m.has_screenshot and m.draft.get("mode") == "score" else "**check the result below** and confirm it"
-    await reply(interaction, f"Match #{m.id} submitted - you can queue again. Now {what}. "
+    queue = "you can queue again" if REJOIN_AFTER != "confirmed" else "you can queue again once it's confirmed"
+    await reply(interaction, f"Match #{m.id} submitted - {queue}. Now {what}. "
                              f"It's logged once {need} players confirm, at least {need_losers} from the losing team.{note}",
                 ephemeral=False)
     await _expire_reply(interaction)
