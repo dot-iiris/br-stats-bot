@@ -106,6 +106,18 @@ changes MMR. Two Discord posts are handled by the website rather than the bot:
 Players whose Battlerite name differs from their name on the website should run
 `/ign` once, so that their scoreboard rows are matched to them reliably.
 
+## Changing settings
+
+Administrators can change most of the bot's settings without restarting it,
+with `/admin settings` and `/admin maps` in Discord or on the website's
+Settings page: lobby timeouts and channels, the ping role and its timings,
+result confirmations, the screenshot trust streak, tidying of match posts, the
+linked and admin roles, and separate map pools for 2v2 and 3v3. The website
+keeps the changed values and the bot reads them every minute, keeping a copy
+in `state.json` for when the website cannot be reached. The values in `.env`
+are the defaults that a reset returns to. The bot token, the API key and the
+channel IDs used for posting can only be set in `.env`.
+
 ## Linking Discord accounts to players
 
 A player runs `/link name:<website name>`. If no player with that name exists
@@ -136,6 +148,8 @@ browser.
 | `/link`, `/whoami`, `/ign` | Everyone | Link an account, check the link, set an in-game name |
 | `/rank [member]`, `/leaderboard` | Everyone | Current-season statistics from the website |
 | `/admin link`, `unlink`, `cancel-match`, `clear-lobby` | Administrators | Corrections and clean-up |
+| `/admin settings show`, `set`, `reset` | Administrators | View or change the bot's settings |
+| `/admin maps show`, `add`, `remove`, `reset` | Administrators | The 2v2 and 3v3 map pools |
 
 Administrators are members with the Manage Server permission, or those listed
 in `ADMIN_ROLE_IDS` or `ADMIN_USER_IDS`.

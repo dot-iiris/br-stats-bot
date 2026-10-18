@@ -41,6 +41,20 @@ class WebsiteApi:
         except aiohttp.ClientError as e:
             raise ApiError(503, f"Can't reach the website ({e.__class__.__name__})") from e
 
+    # --- settings admins can change (the website keeps them) ---
+    async def settings_hello(self, defaults: dict, roles: list, channels: list) -> dict:
+        return await self._req("POST", "/bot/settings/hello",
+                               json={"defaults": defaults, "roles": roles, "channels": channels})
+
+    async def settings(self) -> dict:
+        return await self._req("GET", "/bot/settings")
+
+    async def set_setting(self, key: str, value, by: str) -> dict:
+        return await self._req("PUT", f"/bot/settings/{key}", json={"value": value, "by": by})
+
+    async def reset_setting(self, key: str) -> dict:
+        return await self._req("DELETE", f"/bot/settings/{key}")
+
     # --- players / linking ---
     async def player_by_discord(self, discord_id: int) -> Optional[dict]:
         try:

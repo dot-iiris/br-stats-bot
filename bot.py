@@ -54,7 +54,13 @@ DEFAULT_MAPS = [
     "Daharin Battlegrounds (Night)", "The Great Market (Night)", "Meriko Summit (Night)",
     "Orman Temple (Night)",
 ]
-MAPS = [m.strip() for m in os.getenv("MAP_POOL", "").split("|") if m.strip()] or DEFAULT_MAPS
+def _maps(name: str) -> list:
+    return [m.strip() for m in os.getenv(name, "").split("|") if m.strip()]
+
+
+# separate pools per format; MAP_POOL (older setting) is the default for both
+MAP_POOL_2V2 = _maps("MAP_POOL_2V2") or _maps("MAP_POOL") or list(DEFAULT_MAPS)
+MAP_POOL_3V3 = _maps("MAP_POOL_3V3") or _maps("MAP_POOL") or list(DEFAULT_MAPS)
 
 CYAN = discord.Colour.from_str("#22D3EE")
 RED = discord.Colour.from_str("#FF2E55")
@@ -89,6 +95,55 @@ LOBBY_PING_COOLDOWN_MINUTES = float(os.getenv("LOBBY_PING_COOLDOWN_MINUTES") or 
 OCR_TRUST_STREAK = int(os.getenv("OCR_TRUST_STREAK") if os.getenv("OCR_TRUST_STREAK") is not None else 5)
 
 
+# ---------------------------------------------------------------- settings admins can change
+# Admins change these with /admin settings and /admin maps, or on the website's Settings page. The
+# website keeps the changes and the bot reads them every SETTINGS_POLL_SECONDS (and keeps a copy in
+# state.json for when the website can't be reached). The values above, from .env, are the defaults.
+SETTINGS_POLL_SECONDS = 60
+_role = lambda v: int(v or 0)
+_id_set = lambda v: {int(x) for x in (v or [])}
+SETTING_GLOBALS = {   # setting -> (global it sets, converter)
+    "LOBBY_TIMEOUT_MINUTES": ("LOBBY_TIMEOUT_MINUTES", float),
+    "STICKY_SETTINGS_MINUTES": ("STICKY_SETTINGS_MINUTES", float),
+    "LOBBY_CHANNEL_IDS": ("LOBBY_CHANNELS", _id_set),
+    "LOBBY_PING_ROLE_ID": ("LOBBY_PING_ROLE_ID", _role),
+    "LOBBY_PING_QUIET_MINUTES": ("LOBBY_PING_QUIET_MINUTES", float),
+    "LOBBY_PING_COOLDOWN_MINUTES": ("LOBBY_PING_COOLDOWN_MINUTES", float),
+    "RESULT_CONFIRMATIONS": ("RESULT_CONFIRMATIONS", int),
+    "RESULT_LOSER_CONFIRMATIONS": ("RESULT_LOSER_CONFIRMATIONS", int),
+    "RESULT_CONFIRMATIONS_2V2": ("RESULT_CONFIRMATIONS_2V2", int),
+    "RESULT_LOSER_CONFIRMATIONS_2V2": ("RESULT_LOSER_CONFIRMATIONS_2V2", int),
+    "OCR_TRUST_STREAK": ("OCR_TRUST_STREAK", int),
+    "CLEAN_MATCH_POST": ("CLEAN_MATCH_POST", bool),
+    "LINKED_ROLE_ID": ("LINKED_ROLE_ID", _role),
+    "ADMIN_ROLE_IDS": ("ADMIN_ROLES", _id_set),
+    "MAP_POOL_2V2": ("MAP_POOL_2V2", list),
+    "MAP_POOL_3V3": ("MAP_POOL_3V3", list),
+}
+
+
+def _setting_json(key: str):
+    v = globals()[SETTING_GLOBALS[key][0]]
+    if isinstance(v, set):
+        return sorted(str(x) for x in v)
+    if key in ("LOBBY_PING_ROLE_ID", "LINKED_ROLE_ID"):
+        return str(v) if v else ""
+    return list(v) if isinstance(v, list) else v
+
+
+SETTING_DEFAULTS = {k: _setting_json(k) for k in SETTING_GLOBALS}
+
+
+def apply_settings(overrides: dict):
+    """Use the admins' values where set and the .env defaults for the rest."""
+    for key, (name, conv) in SETTING_GLOBALS.items():
+        try:
+            globals()[name] = conv(overrides.get(key, SETTING_DEFAULTS[key]))
+        except (TypeError, ValueError):
+            log.warning("Ignoring the %s setting: not valid", key)
+            globals()[name] = conv(SETTING_DEFAULTS[key])
+
+
 # ---------------------------------------------------------------- client
 class BRBot(discord.Client):
     def __init__(self):
@@ -96,6 +151,7 @@ class BRBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.api = WebsiteApi(API_URL, BOT_KEY)
         self.store = Store(os.path.join(HERE, "state.json"))
+        apply_settings(self.store.settings)   # last known values until the website answers
         self.lock = asyncio.Lock()
 
     async def setup_hook(self):
@@ -537,7 +593,7 @@ async def launch_match(lobby: Lobby):
         code = bot.store.new_match_id()
     m = Match(
         id=code, channel_id=MATCH_FEED_CHANNEL or lobby.channel_id,
-        format=lobby.format, mode=lobby.mode, ranked=lobby.ranked, map=random.choice(MAPS),
+        format=lobby.format, mode=lobby.mode, ranked=lobby.ranked, map=random.choice((MAP_POOL_2V2 if lobby.format == "2v2" else MAP_POOL_3V3) or DEFAULT_MAPS),
         team_a=side(res["team_a"]), team_b=side(res["team_b"]),
         team_a_mmr=res.get("team_a_mmr", 0), team_b_mmr=res.get("team_b_mmr", 0),
         win_probability_a=res.get("win_probability_a", 50),
@@ -1640,6 +1696,261 @@ async def admin_clear(interaction: discord.Interaction):
     await reply(interaction, f"Cleared {len(gone)} lobb{'y' if len(gone) == 1 else 'ies'}." if gone else "No lobby here.")
 
 
+# ---------------------------------------------------------------- /admin settings, /admin maps
+_settings_rows: list = []          # the website's description and value of each setting
+_map_names: list = list(DEFAULT_MAPS)
+_said_hello = False
+_settings_task: Optional[asyncio.Task] = None
+
+
+def _guild() -> Optional[discord.Guild]:
+    return bot.get_guild(GUILD_ID) if GUILD_ID else (bot.guilds[0] if bot.guilds else None)
+
+
+async def refresh_settings() -> bool:
+    """Read the settings from the website (sending this bot's defaults first after a (re)connect)."""
+    global _said_hello, _settings_rows, _map_names
+    try:
+        if not _said_hello:
+            g = _guild()
+            roles = [{"id": str(r.id), "name": r.name} for r in (g.roles if g else []) if not r.is_default() and not r.managed]
+            channels = [{"id": str(c.id), "name": c.name} for c in (g.text_channels if g else [])]
+            data = await bot.api.settings_hello(SETTING_DEFAULTS, roles, channels)
+            _said_hello = True
+        else:
+            data = await bot.api.settings()
+    except ApiError as e:
+        log.warning("Couldn't read settings from the website: %s", e.detail)
+        return False
+    _settings_rows = [r for r in (data.get("settings") or []) if r.get("key") in SETTING_GLOBALS]
+    _map_names = data.get("map_names") or _map_names
+    overrides = {k: v for k, v in (data.get("overrides") or {}).items() if k in SETTING_GLOBALS}
+    if overrides != bot.store.settings:
+        bot.store.settings = overrides
+        bot.store.save()
+        apply_settings(overrides)
+        log.info("Settings updated: %s", ", ".join(sorted(overrides)) or "all defaults")
+    return True
+
+
+async def _settings_watcher():
+    while not bot.is_closed():
+        await refresh_settings()
+        await asyncio.sleep(SETTINGS_POLL_SECONDS)
+
+
+def ensure_settings_watcher():
+    global _settings_task
+    if _settings_task is None or _settings_task.done():
+        _settings_task = asyncio.get_running_loop().create_task(_settings_watcher())
+
+
+def _setting_row(key: str) -> Optional[dict]:
+    return next((r for r in _settings_rows if r["key"] == key), None)
+
+
+def fmt_setting(row: dict, v=None) -> str:
+    v = row.get("value") if v is None else v
+    t = row.get("type")
+    if v is None:
+        return "-"
+    if t == "bool":
+        return "on" if v else "off"
+    if t == "role":
+        return f"<@&{v}>" if v else "off"
+    if t == "roles":
+        return " ".join(f"<@&{x}>" for x in v) if v else "none"
+    if t == "channels":
+        return " ".join(f"<#{x}>" for x in v) if v else "any channel"
+    if t == "maps":
+        return ", ".join(v)
+    if t == "choice":
+        return dict(row.get("choices") or []).get(v, str(v))
+    if isinstance(v, float) and v == int(v):
+        return str(int(v))
+    return str(v)
+
+
+def settings_embed() -> discord.Embed:
+    e = discord.Embed(title="Bot settings", colour=CYAN, url=f"{SITE_URL}/settings",
+                      description="Change one with `/admin settings set`, map pools with `/admin maps`, "
+                                  "or on the website's Settings page. *Changed* = not the .env default.")
+    groups: dict = {}
+    for r in _settings_rows:
+        if r["type"] == "maps":
+            continue
+        line = f"**{r['label']}**: {fmt_setting(r)}"
+        if r.get("overridden"):
+            line += f" *(changed, default {fmt_setting(r, r.get('default'))})*"
+        groups.setdefault(r["group"], []).append(line)
+    for g, lines in groups.items():
+        e.add_field(name=g, value="\n".join(lines)[:1024], inline=False)
+    for key in ("MAP_POOL_2V2", "MAP_POOL_3V3"):
+        r = _setting_row(key)
+        if r:
+            e.add_field(name=f"{r['label']} ({len(r['value'] or [])})", value=fmt_setting(r)[:1024] or "-", inline=False)
+    return e
+
+
+async def _settings_ready(interaction: discord.Interaction) -> bool:
+    if _settings_rows or await refresh_settings():
+        return True
+    await reply(interaction, "Couldn't reach the website for the settings - try again in a moment.")
+    return False
+
+
+async def setting_choices(interaction: discord.Interaction, current: str):
+    cur = current.lower()
+    return [app_commands.Choice(name=f"{r['group']}: {r['label']}"[:100], value=r["key"])
+            for r in _settings_rows if r["type"] != "maps" and (cur in r["label"].lower() or cur in r["key"].lower())][:25]
+
+
+async def setting_value_choices(interaction: discord.Interaction, current: str):
+    row = _setting_row(getattr(interaction.namespace, "setting", "") or "")
+    if not row:
+        return []
+    cur = current.lower()
+    t = row["type"]
+    opts = []
+    if t == "bool":
+        opts = [("on", "on"), ("off", "off")]
+    elif t == "choice":
+        opts = [(label, key) for key, label in row.get("choices") or []]
+    elif t in ("role", "roles"):
+        g = _guild()
+        opts = [("off" if t == "role" else "none", "off")] + \
+               [(f"@{r.name}", str(r.id)) for r in (g.roles if g else []) if not r.is_default() and not r.managed]
+    elif t == "channels":
+        g = _guild()
+        opts = [("any channel", "any")] + [(f"#{c.name}", str(c.id)) for c in (g.text_channels if g else [])]
+    elif t in ("int", "float"):
+        opts = [(f"{current} (between {row['min']:g} and {row['max']:g})", current)] if current else []
+    return [app_commands.Choice(name=n[:100], value=v[:100]) for n, v in opts if not cur or cur in n.lower()][:25]
+
+
+admin_settings_group = app_commands.Group(name="settings", description="View or change the bot's settings",
+                                          parent=admin_group)
+
+
+@admin_settings_group.command(name="show", description="Show the bot's settings")
+async def admin_settings_show(interaction: discord.Interaction):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    await interaction.response.send_message(embed=settings_embed(), ephemeral=True)
+
+
+@admin_settings_group.command(name="set", description="Change one of the bot's settings")
+@app_commands.describe(setting="Which setting", value="New value (several roles or channels: separate with spaces)")
+@app_commands.autocomplete(setting=setting_choices, value=setting_value_choices)
+async def admin_settings_set(interaction: discord.Interaction, setting: str, value: str):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    if not _setting_row(setting) or setting.startswith("MAP_POOL"):
+        return await reply(interaction, "Pick a setting from the list (map pools: `/admin maps`).")
+    try:
+        row = await bot.api.set_setting(setting, value, interaction.user.display_name)
+    except ApiError as e:
+        return await reply(interaction, f"Not changed - {e.detail}")
+    await refresh_settings()
+    await reply(interaction, f"**{row['label']}** is now {fmt_setting(row)}.")
+
+
+@admin_settings_group.command(name="reset", description="Put a setting back to its .env default")
+@app_commands.autocomplete(setting=setting_choices)
+async def admin_settings_reset(interaction: discord.Interaction, setting: str):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    if not _setting_row(setting) or setting.startswith("MAP_POOL"):
+        return await reply(interaction, "Pick a setting from the list (map pools: `/admin maps reset`).")
+    try:
+        row = await bot.api.reset_setting(setting)
+    except ApiError as e:
+        return await reply(interaction, f"Not changed - {e.detail}")
+    await refresh_settings()
+    await reply(interaction, f"**{row['label']}** is back to its default: {fmt_setting(row)}.")
+
+
+admin_maps_group = app_commands.Group(name="maps", description="The 2v2 and 3v3 map pools", parent=admin_group)
+
+
+def _pool_key(fmt: str) -> str:
+    return "MAP_POOL_2V2" if fmt == "2v2" else "MAP_POOL_3V3"
+
+
+async def map_add_choices(interaction: discord.Interaction, current: str):
+    row = _setting_row(_pool_key(getattr(interaction.namespace, "format", "3v3") or "3v3"))
+    have = {m.lower() for m in (row or {}).get("value") or []}
+    names = [m for m in _map_names if m.lower() not in have and current.lower() in m.lower()]
+    if current and current.lower() not in have and current.lower() not in (m.lower() for m in names):
+        names.append(current)
+    return [app_commands.Choice(name=m[:100], value=m[:100]) for m in names][:25]
+
+
+async def map_remove_choices(interaction: discord.Interaction, current: str):
+    row = _setting_row(_pool_key(getattr(interaction.namespace, "format", "3v3") or "3v3"))
+    return [app_commands.Choice(name=m[:100], value=m[:100]) for m in (row or {}).get("value") or []
+            if current.lower() in m.lower()][:25]
+
+
+async def _save_pool(interaction: discord.Interaction, fmt: str, maps: list, done: str):
+    try:
+        row = await bot.api.set_setting(_pool_key(fmt), maps, interaction.user.display_name)
+    except ApiError as e:
+        return await reply(interaction, f"Not changed - {e.detail}")
+    await refresh_settings()
+    await reply(interaction, f"{done} The {fmt} pool now has {len(row['value'])} map{'' if len(row['value']) == 1 else 's'}: {fmt_setting(row)}")
+
+
+@admin_maps_group.command(name="show", description="Show the 2v2 and 3v3 map pools")
+async def admin_maps_show(interaction: discord.Interaction):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    lines = []
+    for fmt in ("2v2", "3v3"):
+        r = _setting_row(_pool_key(fmt))
+        if r:
+            lines.append(f"**{fmt}** ({len(r['value'] or [])}{', changed' if r.get('overridden') else ''}): {fmt_setting(r)}")
+    await reply(interaction, "\n".join(lines) or "No map pools.")
+
+
+@admin_maps_group.command(name="add", description="Add a map to a format's pool")
+@app_commands.choices(format=FORMAT_CHOICES)
+@app_commands.autocomplete(map=map_add_choices)
+async def admin_maps_add(interaction: discord.Interaction, format: app_commands.Choice[str], map: str):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    pool = list(_setting_row(_pool_key(format.value))["value"] or [])
+    if map.strip().lower() in (m.lower() for m in pool):
+        return await reply(interaction, f"**{map}** is already in the {format.value} pool.")
+    await _save_pool(interaction, format.value, pool + [map], f"Added **{map.strip()}**.")
+
+
+@admin_maps_group.command(name="remove", description="Take a map out of a format's pool")
+@app_commands.choices(format=FORMAT_CHOICES)
+@app_commands.autocomplete(map=map_remove_choices)
+async def admin_maps_remove(interaction: discord.Interaction, format: app_commands.Choice[str], map: str):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    pool = list(_setting_row(_pool_key(format.value))["value"] or [])
+    keep = [m for m in pool if m.lower() != map.strip().lower()]
+    if len(keep) == len(pool):
+        return await reply(interaction, f"**{map}** isn't in the {format.value} pool.")
+    await _save_pool(interaction, format.value, keep, f"Removed **{map.strip()}**.")
+
+
+@admin_maps_group.command(name="reset", description="Put a format's map pool back to its default")
+@app_commands.choices(format=FORMAT_CHOICES)
+async def admin_maps_reset(interaction: discord.Interaction, format: app_commands.Choice[str]):
+    if not await _admin_guard(interaction) or not await _settings_ready(interaction):
+        return
+    try:
+        row = await bot.api.reset_setting(_pool_key(format.value))
+    except ApiError as e:
+        return await reply(interaction, f"Not changed - {e.detail}")
+    await refresh_settings()
+    await reply(interaction, f"The {format.value} pool is back to its default ({len(row['value'] or [])} maps).")
+
+
 bot.tree.add_command(admin_group)
 
 
@@ -1667,7 +1978,10 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_ready():
+    global _said_hello
     log.info("Logged in as %s (%s). Website API: %s", bot.user, bot.user.id, API_URL)
+    _said_hello = False   # (re)send the defaults, roles and channels
+    ensure_settings_watcher()
 
 
 def main():

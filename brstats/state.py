@@ -102,6 +102,7 @@ class Store:
         self.recent_teams: List[dict] = []   # last matches' teams: {"teams": [[player ids], [player ids]], "at"}
         self.last_filled: Dict[str, float] = {}   # format -> when a lobby of it last filled (any channel)
         self.last_open_ping: float = 0            # when the role was last pinged about a new lobby
+        self.settings: Dict[str, object] = {}     # settings admins changed (from the website), used offline too
         self.load()
 
     def load(self):
@@ -125,6 +126,7 @@ class Store:
         self.recent_teams = data.get("recent_teams") or []
         self.last_filled = data.get("last_filled") or {}
         self.last_open_ping = data.get("last_open_ping") or 0
+        self.settings = data.get("settings") or {}
 
     def save(self):
         tmp = self.path + ".tmp"
@@ -138,6 +140,7 @@ class Store:
                 "recent_teams": self.recent_teams,
                 "last_filled": self.last_filled,
                 "last_open_ping": self.last_open_ping,
+                "settings": self.settings,
             }, f, indent=2)
         os.replace(tmp, self.path)
 
