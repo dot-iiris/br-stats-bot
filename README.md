@@ -117,7 +117,8 @@ changes MMR. Two Discord posts are handled by the website rather than the bot:
 team has a tournament match to play, and who is not in a lobby match, can `/submit` each game
 of it in the usual way: the bot finds the match, the players confirm the result, and the game
 counts towards that series on the website's tournament page. Tournament games are kept apart
-from lobby matches: they don't change MMR or count in the ranked or unranked stats.
+from lobby matches: they don't count in the ranked or unranked stats (a tournament
+can still be set to move MMR on the website).
 
 Players whose Battlerite name differs from their name on the website should run
 `/ign` once, so that their scoreboard rows are matched to them reliably.
