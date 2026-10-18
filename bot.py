@@ -94,6 +94,9 @@ LOBBY_PING_COOLDOWN_MINUTES = float(os.getenv("LOBBY_PING_COOLDOWN_MINUTES") or 
 # players confirm the round score; the bot checks for it every READ_POLL_SECONDS, for up to READ_WAIT_SECONDS.
 READ_POLL_SECONDS = 2
 READ_WAIT_SECONDS = 300
+# What players confirm on a screenshot result: "score" - just the round score (the rest is read in the
+# background and logged with it); "full" - every champion and stat, which they can fix first
+RESULT_CHECK = "full" if (os.getenv("RESULT_CHECK") or "").strip().lower() == "full" else "score"
 
 
 # ---------------------------------------------------------------- settings admins can change
@@ -114,6 +117,7 @@ SETTING_GLOBALS = {   # setting -> (global it sets, converter)
     "RESULT_LOSER_CONFIRMATIONS": ("RESULT_LOSER_CONFIRMATIONS", int),
     "RESULT_CONFIRMATIONS_2V2": ("RESULT_CONFIRMATIONS_2V2", int),
     "RESULT_LOSER_CONFIRMATIONS_2V2": ("RESULT_LOSER_CONFIRMATIONS_2V2", int),
+    "RESULT_CHECK": ("RESULT_CHECK", lambda v: "full" if str(v).strip().lower() == "full" else "score"),
     "CLEAN_MATCH_POST": ("CLEAN_MATCH_POST", bool),
     "LINKED_ROLE_ID": ("LINKED_ROLE_ID", _role),
     "ADMIN_ROLE_IDS": ("ADMIN_ROLES", _id_set),
@@ -1649,14 +1653,20 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
         bot.store.save()
     upload_note = None
     if data:
-        try:   # only the round score is read before this returns; the rest follows in the background
+        quick = RESULT_CHECK != "full"
+        try:   # quick: only the round score is read before this returns; the rest follows in the background
             pending = await bot.api.upload_screenshot(pending["id"], data, filename, interaction.user.display_name,
-                                                      quick=True)
+                                                      quick=quick)
             async with bot.lock:
-                m.draft = score_draft(m, pending, interaction.user.id, filename)
+                if quick:
+                    m.draft = score_draft(m, pending, interaction.user.id, filename)
+                else:    # the whole scoreboard was read: the players check all of it
+                    m.draft = new_draft(m, pending)
+                    m.draft["shot_name"] = _shot_name(filename)
                 m.has_screenshot = True
                 bot.store.save()
-            watch_read(m)
+            if quick:
+                watch_read(m)
         except ApiError as e:
             data = None
             upload_note = (f"The screenshot wasn't used ({e.detail}). Fill in the result with the ✏️ buttons, "
@@ -1669,7 +1679,7 @@ async def finish_submit(interaction: discord.Interaction, m: Match, data: Option
     ensure_review_watcher()
     note = f"\n{upload_note}" if upload_note else ""
     need, need_losers = confirms_needed(m)
-    what = "**confirm the round score below**" if m.has_screenshot else "**check the result below** and confirm it"
+    what = "**confirm the round score below**" if m.has_screenshot and m.draft.get("mode") == "score" else "**check the result below** and confirm it"
     await reply(interaction, f"Match #{m.id} submitted - you can queue again. Now {what}. "
                              f"It's logged once {need} players confirm, at least {need_losers} from the losing team.{note}",
                 ephemeral=False)
@@ -1688,28 +1698,42 @@ async def add_screenshot(interaction: discord.Interaction, m: Match, screenshot:
     """A match submitted without a screenshot gets one: the screenshot replaces the typed result."""
     await interaction.response.defer(thinking=True)
     data = await screenshot.read()
+    quick = RESULT_CHECK != "full"
     try:
         pending = await bot.api.upload_screenshot(m.pending_id, data, screenshot.filename, interaction.user.display_name,
-                                                  quick=True)
+                                                  quick=quick)
     except ApiError as e:
         if e.status in (404, 409) and not await refresh_from_website(m):
             return await reply(interaction, f"Match #{m.id} was already settled on the website.")
         return await reply(interaction, f"Couldn't use that screenshot: {e.detail}")
     async with bot.lock:
         old = m.draft
-        new = score_draft(m, pending, interaction.user.id, screenshot.filename)
-        if new["a_rounds"] is None and losing_team(old):   # orbs unreadable: keep the typed score
-            new["a_rounds"], new["b_rounds"], new["warnings"] = old.get("a_rounds"), old.get("b_rounds"), []
-        new["typed_champions"] = {pid: i.get("champion") for pid, i in old["players"].items() if i.get("champion")}
+        if quick:
+            new = score_draft(m, pending, interaction.user.id, screenshot.filename)
+            if new["a_rounds"] is None and losing_team(old):   # orbs unreadable: keep the typed score
+                new["a_rounds"], new["b_rounds"], new["warnings"] = old.get("a_rounds"), old.get("b_rounds"), []
+            new["typed_champions"] = {pid: i.get("champion") for pid, i in old["players"].items() if i.get("champion")}
+        else:
+            new = new_draft(m, pending)
+            pre = pending.get("prefill") or {}
+            a, b = pre.get("team_a_rounds"), pre.get("team_b_rounds")
+            new["a_rounds"], new["b_rounds"] = (a, b) if a is not None and b is not None and a != b else \
+                (old.get("a_rounds"), old.get("b_rounds"))
+            for pid, info in new["players"].items():
+                if not info.get("champion"):
+                    info["champion"] = old["players"][pid].get("champion")
+            new["shot_name"] = _shot_name(screenshot.filename)
         new["edits"] = (old.get("edits") or [])[-9:] + [f"📷 {interaction.user.display_name} added the screenshot"]
         m.draft, m.has_screenshot, m.confirms = new, True, []
         old_card, m.result_message_id = m.result_message_id, None
         bot.store.save()
     await _delete_message(m.channel_id, old_card)
     await post_result_card(m, data)
-    watch_read(m)
+    if quick:
+        watch_read(m)
     await reply(interaction, f"Screenshot added to match #{m.id} - the confirmations started again. "
-                             "Confirm the round score below.", ephemeral=False)
+                             + ("Confirm the round score below." if quick else "Check the result below and confirm it."),
+                ephemeral=False)
     await _expire_reply(interaction)
 
 

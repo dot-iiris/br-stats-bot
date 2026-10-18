@@ -89,6 +89,11 @@ it stays on the Pending page with the confirmed score for an administrator to
 finish. A result entered without a screenshot is checked in full by the
 players, as before, with edit buttons for each player's champion.
 
+With `RESULT_CHECK=full` (or "What players confirm: Whole scoreboard" in the
+settings), screenshot results work the same way: the players wait for the
+whole scoreboard to be read, then check and can fix every champion and
+statistic before confirming.
+
 Administrators can also log, correct or discard a result on the website's
 Pending page while it is being confirmed, and edit or delete it on the Matches
 page afterwards. The bot notices such changes within `REVIEW_POLL_SECONDS` (300
