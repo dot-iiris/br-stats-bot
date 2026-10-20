@@ -2165,8 +2165,6 @@ async def map_add_choices(interaction: discord.Interaction, current: str):
     row = _setting_row(_pool_key(getattr(interaction.namespace, "format", "3v3") or "3v3"))
     have = {m.lower() for m in (row or {}).get("value") or []}
     names = [m for m in _map_names if m.lower() not in have and current.lower() in m.lower()]
-    if current and current.lower() not in have and current.lower() not in (m.lower() for m in names):
-        names.append(current)
     return [app_commands.Choice(name=m[:100], value=m[:100]) for m in names][:25]
 
 
@@ -2204,9 +2202,12 @@ async def admin_maps_add(interaction: discord.Interaction, format: app_commands.
     if not await _admin_guard(interaction) or not await _settings_ready(interaction):
         return
     pool = list(_setting_row(_pool_key(format.value))["value"] or [])
-    if map.strip().lower() in (m.lower() for m in pool):
-        return await reply(interaction, f"**{map}** is already in the {format.value} pool.")
-    await _save_pool(interaction, format.value, pool + [map], f"Added **{map.strip()}**.")
+    known = next((m for m in _map_names if m.lower() == " ".join(map.split()).lower()), None)
+    if known is None:
+        return await reply(interaction, f"**{map}** isn't a Battlerite map - pick one from the list.")
+    if known.lower() in (m.lower() for m in pool):
+        return await reply(interaction, f"**{known}** is already in the {format.value} pool.")
+    await _save_pool(interaction, format.value, pool + [known], f"Added **{known}**.")
 
 
 @admin_maps_group.command(name="remove", description="Take a map out of a format's pool")
