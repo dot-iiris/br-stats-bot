@@ -592,15 +592,17 @@ async def launch_match(lobby: Lobby):
         return [{"discord_id": by_pid[p["id"]].discord_id, "player_id": p["id"],
                  "name": p["name"], "mmr": p.get("mmr", 0)} for p in players]
 
+    season_pool = None
     try:   # S2-3v3-a1f9: season, format, unique id (cancelled matches never reuse theirs)
-        code = await bot.api.reserve_match_code(lobby.format, lobby.ranked)
+        reserved = await bot.api.reserve_match_code(lobby.format, lobby.ranked)
+        code, season_pool = reserved["code"], reserved.get("map_pool")
     except (ApiError, KeyError, TypeError):
         code = bot.store.new_match_id()   # website unreachable: it adds the season/format part when logged
     if code in bot.store.matches:
         code = bot.store.new_match_id()
     m = Match(
         id=code, channel_id=MATCH_FEED_CHANNEL or lobby.channel_id,
-        format=lobby.format, mode=lobby.mode, ranked=lobby.ranked, map=random.choice((MAP_POOL_2V2 if lobby.format == "2v2" else MAP_POOL_3V3) or DEFAULT_MAPS),
+        format=lobby.format, mode=lobby.mode, ranked=lobby.ranked, map=random.choice(season_pool or (MAP_POOL_2V2 if lobby.format == "2v2" else MAP_POOL_3V3) or DEFAULT_MAPS),
         team_a=side(res["team_a"]), team_b=side(res["team_b"]),
         team_a_mmr=res.get("team_a_mmr", 0), team_b_mmr=res.get("team_b_mmr", 0),
         win_probability_a=res.get("win_probability_a", 50),
@@ -1635,7 +1637,7 @@ async def tournament_game(interaction: discord.Interaction) -> Optional[Match]:
     if not tm:
         return None
     try:
-        code = await bot.api.reserve_match_code(tm["format"], tm["ranked"])
+        code = (await bot.api.reserve_match_code(tm["format"], tm["ranked"]))["code"]
     except (ApiError, KeyError, TypeError):
         code = bot.store.new_match_id()
 

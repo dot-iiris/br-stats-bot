@@ -111,9 +111,10 @@ class WebsiteApi:
         """A launched match was cancelled."""
         await self._req("DELETE", f"/matchmaking/lineups/{code}")
 
-    async def reserve_match_code(self, fmt: str, ranked: bool) -> str:
-        """The match's code from the website, e.g. S2-3v3-a1f9 (U-... for unranked)."""
-        return (await self._req("POST", "/matches/reserve-code", json={"format": fmt, "ranked": ranked}))["code"]
+    async def reserve_match_code(self, fmt: str, ranked: bool) -> dict:
+        """{"code": the match's code from the website, e.g. S2-3v3-a1f9 (U-... for unranked),
+        "map_pool": the season's own map pool for this format, or None for the general pool}."""
+        return await self._req("POST", "/matches/reserve-code", json={"format": fmt, "ranked": ranked})
 
     async def create_pending_match(self, payload: dict) -> dict:
         return await self._req("POST", "/pending-matches", json=payload)
